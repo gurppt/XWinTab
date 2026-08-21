@@ -3,6 +3,11 @@
 This fork extends [Graham--M/XWinTab](https://github.com/Graham--M/XWinTab), an
 experimental Wintab implementation for Windows applications running through Wine.
 
+The original project remains the upstream source. This repository keeps a separate,
+buildable compatibility branch for applications and tablet devices that exercise Wintab
+paths not covered by upstream XWinTab. It is not a replacement for Wine's built-in
+`wintab32` in every application.
+
 The changes were developed while enabling pen pressure in Adobe Flash/Animate with a
 Huion display tablet under X11/libinput. Several fixes are application-independent:
 
@@ -23,6 +28,11 @@ The exact changes and their original symptoms are documented in [PATCHES.md](PAT
   GE-Proton's built-in `wintab32`, not XWinTab.
 - X11 only. This implementation talks directly to XInput through XCB and is not a native
   Wayland tablet bridge.
+
+The first known-good snapshot containing all eight patch groups is commit
+[`7a795f4`](https://github.com/gurppt/XWinTab/commit/7a795f4). It intentionally preserves
+the diagnostic logging present in the binaries validated with Animate 2024. Debug cleanup
+should be performed separately so the known-good reference remains easy to recover.
 
 ## Build
 
@@ -63,6 +73,64 @@ launching Wine:
 ```bash
 export XWINTAB_DEVICE="$(xinput list --name-only | grep -i '^HUION' | grep -F '(0)' | head -1)"
 ```
+
+Example launcher fragment for a 64-bit Wine/Proton application:
+
+```bash
+export WINEPREFIX=/path/to/prefix
+export WINEDLLOVERRIDES="wintab32=n;${WINEDLLOVERRIDES:-}"
+export XWINTAB_DEVICE="$(xinput list --name-only 2>/dev/null \
+  | grep -i '^HUION' | grep -F '(0)' | head -1)"
+exec wine '/path/to/Application.exe'
+```
+
+The tablet device must already expose a real pressure valuator under XInput. Hardware
+initialisation (for example `uclogic-probe`) and mapping the pen cursor to a monitor are
+separate host-level concerns and are deliberately not installed by this repository.
+
+## Using this fork from application-porting projects
+
+Application-specific repositories should not maintain another edited copy of these source
+files. Prefer a tagged release or a pinned commit from this fork, and keep only the
+application-specific integration in those repositories:
+
+- Wine/Proton version and prefix architecture;
+- location where the 32-bit or 64-bit pair is installed;
+- `WINEDLLOVERRIDES` and `XWINTAB_DEVICE` launcher configuration;
+- the application/tablet combination that was actually tested.
+
+This keeps the Wintab implementation reusable while avoiding divergent copies in Flash,
+Animate, Moho or future porting projects.
+
+## Maintaining the fork
+
+The usual remote layout is:
+
+```text
+origin    https://github.com/gurppt/XWinTab.git
+upstream  https://github.com/Graham--M/XWinTab.git
+```
+
+Check for upstream changes without altering the working tree:
+
+```bash
+git fetch upstream
+git log --oneline main..upstream/main
+```
+
+When upstream has new commits, merge or rebase them on a temporary branch first and rebuild
+both architectures before updating `main`:
+
+```bash
+git switch -c test-upstream-sync
+git merge upstream/main
+./build64-def.sh
+./build32-def.sh
+```
+
+Do not force-sync this fork with upstream: that would discard the compatibility patches.
+Generic bug fixes can be proposed upstream independently, while application-specific
+behaviour can remain documented and maintained here.
 
 ## Provenance and license
 
