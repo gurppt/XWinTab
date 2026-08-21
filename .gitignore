@@ -1,0 +1,5 @@
+wintab32.dll
+XWinTabHelper.dll.so
+*.o
+*.a
+*.log

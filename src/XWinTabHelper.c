@@ -8,6 +8,9 @@
 //
 
 #include <ctype.h>
+#include <stdio.h>
+#include <stdio.h>
+#include <stdio.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -40,6 +43,7 @@ static HelperData g_data;
 static EventInfo g_eventInfo;
 
 static const char *g_requiredName;
+static int g_nameFallback;   /* patch #8a: 2nd pass = token match if exact name missed */
 
 
 // ----------------
@@ -281,7 +285,7 @@ static int check_device(const xcb_input_device_info_t *device,
         device->device_use != XCB_INPUT_DEVICE_USE_IS_X_EXTENSION_POINTER)
         return 0;
 
-    if (!g_requiredName) {
+    if (!g_requiredName || g_nameFallback) {   /* patch #8a: fallback to token match */
         if (!match_token(name, "stylus") && !match_token(name, "pen"))
             return 0;
     } else {
@@ -309,8 +313,8 @@ static int check_device(const xcb_input_device_info_t *device,
     }
 
     const int kMinStylusAxis = 3;
-    if (!button_info || !valuator_info ||
-        !button_info->num_buttons || valuator_info->axes_len < kMinStylusAxis)
+    if (!valuator_info ||
+        valuator_info->axes_len < kMinStylusAxis)
         return 0;
 
     // Ok, this is probably a tablet stylus.
@@ -324,10 +328,7 @@ static int check_device(const xcb_input_device_info_t *device,
         dev_axis[i].resolution = axis[i].resolution;
     }
 
-    if (button_info->num_buttons > 32)
-        g_data.device.nButtons = 32;
-    else
-        g_data.device.nButtons = button_info->num_buttons;
+    g_data.device.nButtons = button_info ? (button_info->num_buttons > 32 ? 32 : button_info->num_buttons) : 0;
     g_data.device.hasTilt = valuator_info->axes_len > 4 ? 1 : 0;
 
     return 1;
@@ -352,6 +353,7 @@ static void check_devices(const xcb_input_list_input_devices_reply_t *r) {
         xcb_str_t *name = name_itr.data;
 
         // input_itr is passed const here.
+        fprintf(stderr, "XWINTAB-SCAN: dev id=%d use=%d name=%.*s classes=%d\n", dev->device_id, dev->device_use, xcb_str_name_length(name), xcb_str_name(name), dev->num_class_info);
         if (check_device(dev, &input_itr, name))
             return;
 
@@ -369,11 +371,13 @@ static void check_devices(const xcb_input_list_input_devices_reply_t *r) {
 }
 
 static int setup() {
-    g_data.connection = xcb_connect(NULL, NULL);
-    if (xcb_connection_has_error(g_data.connection)) {
-        xcb_disconnect(g_data.connection);
-        g_data.connection = NULL;
-        return 0;
+    if (!g_data.connection) {   /* patch #8b: reuse connection so Load() is re-callable (rescan) */
+        g_data.connection = xcb_connect(NULL, NULL);
+        if (xcb_connection_has_error(g_data.connection)) {
+            xcb_disconnect(g_data.connection);
+            g_data.connection = NULL;
+            return 0;
+        }
     }
 
     xcb_input_list_input_devices_cookie_t dev_list_cookie;
@@ -393,7 +397,12 @@ static int setup() {
     g_requiredName = getenv("XWINTAB_DEVICE");
 
     g_data.device.id = -1;
+    g_nameFallback = 0;
     check_devices(dev_list_reply);
+    if (g_data.device.id == -1 && g_requiredName) {   /* patch #8a: 2nd pass, token fallback */
+        g_nameFallback = 1;
+        check_devices(dev_list_reply);
+    }
 
     free(dev_list_reply);
     return 1;

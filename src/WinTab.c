@@ -118,6 +118,7 @@ static void init_log() {
         wbuffer[path_len + i] = suffix[i];
 
     g_logFile = _wfopen(wbuffer, L"wb");
+    if (g_logFile) { setvbuf(g_logFile, NULL, _IONBF, 0); fprintf(g_logFile, "INIT_LOG_CALLED\n"); }
     if (!g_logFile)
         err_dlg(L"Error opening log file: _wfopen() failed.");
 }
@@ -564,11 +565,31 @@ static void init_log_context(LPLOGCONTEXTW lctx) {
 //
 
 HCTX WINAPI WTOpenW(HWND hwnd, LPLOGCONTEXTW pLContext, BOOL enable) {
-    log_strf("WTOpenW: called (%s)\n", enable ? "enabled" : "disabled");
+    log_strf("WTOpenW: called (%s) hwnd %p\n", enable ? "enabled" : "disabled", hwnd);
     if (!g_isLoaded)
         load_xwintab();
-    if (g_context.handle || !pLContext)
+    /* patch #8c: the stylus sub-device ("... Pen (0)") only exists once the pen has
+     * been in proximity; if no device was found at first load, rescan now (the user
+     * is about to draw, so the pen is present). */
+    if (g_deviceInfo.id == -1) {
+        log_strf("WTOpenW: no device selected, rescanning\n");
+        load_xwintab();
+    }
+    if (!pLContext)
         return NULL;
+
+    if (g_context.handle) {
+        log_strf("WTOpenW: re-binding existing context to hwnd %p\n", hwnd);
+        EnterCriticalSection(&g_lock);
+        g_context.hwnd = hwnd;
+        g_context.logContext = *pLContext;
+        g_context.enabled = enable;
+        g_context.logContext.lcStatus = enable ? CXS_ONTOP : CXS_DISABLED;
+        LeaveCriticalSection(&g_lock);
+        context_message(&g_context, XWT_CTXOPEN, (WPARAM) g_context.handle,
+                        g_context.logContext.lcStatus);
+        return g_context.handle;
+    }
 
     if (!pLContext->lcInExtX || !pLContext->lcInExtY)
         return NULL;
@@ -653,11 +674,49 @@ UINT WINAPI WTInfoW(UINT cat, UINT idx, LPVOID ptr) {
     if (!g_isLoaded)
         load_xwintab();
 
+    if (cat == 0 && idx == 0) {
+        int present = (pGetSelectedDevice && pGetSelectedDevice()) ? 1 : 0;
+        log_strf("WTInfoW: probe (0,0) -> %s\n", present ? "tablet present" : "no tablet");
+        return present ? sizeof(LOGCONTEXTW) : 0;
+    }
+
     if ((cat == WTI_DEFCONTEXT || cat == WTI_DEFSYSCTX) && !idx) {
         log_strf("WTInfoW: Request for default logcontext\n");
         if (ptr)
             init_log_context((LPLOGCONTEXTW) ptr);
         return sizeof(LOGCONTEXTW);
+    }
+
+    if (cat == WTI_DEVICES) {
+        WTPKT devmask = PK_CONTEXT | PK_STATUS | PK_SERIAL_NUMBER | PK_TIME |
+                        PK_CURSOR | PK_BUTTONS | PK_X | PK_Y |
+                        PK_NORMAL_PRESSURE | PK_ORIENTATION;
+        if (idx == DVC_PKTDATA || idx == DVC_CSRDATA) {
+            if (ptr) *(WTPKT*)ptr = devmask;
+            log_strf("WTInfoW: WTI_DEVICES idx %d -> pktmask 0x%x\n", idx, devmask);
+            return sizeof(WTPKT);
+        }
+        if (idx == DVC_X || idx == DVC_Y || idx == DVC_NPRESSURE) {
+            AXIS ax;
+            memset(&ax, 0, sizeof(ax));
+            if (idx == DVC_X) {
+                ax.axMin = g_deviceInfo.xAxis.min;
+                ax.axMax = g_deviceInfo.xAxis.max;
+                ax.axUnits = TU_INCHES;
+            } else if (idx == DVC_Y) {
+                ax.axMin = g_deviceInfo.yAxis.min;
+                ax.axMax = g_deviceInfo.yAxis.max;
+                ax.axUnits = TU_INCHES;
+            } else {
+                ax.axMin = g_deviceInfo.pressureAxis.min;
+                ax.axMax = g_deviceInfo.pressureAxis.max > 0 ?
+                           g_deviceInfo.pressureAxis.max : 2047;
+                ax.axUnits = TU_NONE;
+            }
+            if (ptr) *(AXIS*)ptr = ax;
+            log_strf("WTInfoW: WTI_DEVICES idx %d -> AXIS [%d..%d]\n", idx, ax.axMin, ax.axMax);
+            return sizeof(AXIS);
+        }
     }
 
     if (cat == WTI_DEVICES && idx == DVC_ORIENTATION) {
@@ -814,8 +873,9 @@ typedef struct PktPeekIterData {
 } PktPeekIterData;
 
 static BOOL pkt_peek_itr(PacketData *pkt, void *userData) {
-    PktPeekIterData *data = (PktPeekIterData *) data;
-    data->dst += packet_copy(&g_context, pkt, data->dst);
+    PktPeekIterData *data = (PktPeekIterData *) userData;
+    if (data->dst)
+        data->dst += packet_copy(&g_context, pkt, data->dst);
     data->read++;
     return data->read < data->count;
 }

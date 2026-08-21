@@ -1,0 +1,12 @@
+XWinTab (version patchee)
+=========================
+
+Base sur XWinTab par Graham--M : https://github.com/Graham--M/XWinTab
+Licence : celle du depot upstream (inclure le fichier LICENSE/COPYING d'upstream
+en copiant la source ici).
+
+Ce depot contient une version MODIFIEE. Les huit groupes de correctifs de
+compatibilite Wintab, Flash/Animate et Huion/libinput sont decrits dans PATCHES.md.
+
+Merci a l'auteur original. Ces correctifs peuvent etre proposes en Pull Request
+upstream pour profiter a toute la communaute.
